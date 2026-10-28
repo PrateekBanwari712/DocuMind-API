@@ -353,13 +353,15 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    throw new Error(`HTTP error! status: ${response.status}, response: ${response}`);
                 }
 
                 const data = await response.json();
 
                 if (data.error) {
                     showError(data.error);
+                    return data
+
                 } else {
                     const answer = data.answer || 'No response received';
                     addMessage('assistant', answer);
