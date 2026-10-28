@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = ["*"]
 
     #PINECONE VECTOR DATABASE
-    PINECONE_API_KEY: str = ""
+    PINECONE_DB_API_KEY: str = ""
     PINECONE_ENVIRONMENT: str = ""
     PINECONE_INDEX_NAME: str = "rag-index"
 
@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "sentence-transformers/all-mpnet-base-v2" #open-source embedding model dimension - 768
 
     #groq settings for llm
-    GROK_API_KEY : str = ""
-    LLM_MODEL: str = "gemma2-9b-it" #groq model
+    GOOGLE_GENERATIVE_AI_API_KEY  : str = ""
+    LLM_MODEL: str = "gemini-3.6-flash" #groq model
 
     #LangGraph settings
     LANGGRAPH_CHECKPOINTER: str = "memory"
@@ -50,11 +50,11 @@ def validate_settings():
     """ Validate that required environment variables are set"""
     required_vars = []
 
-    if not settings.GROK_API_KEY:
-        required_vars.append("GROQ_API_KEY")
+    if not settings.GOOGLE_GENERATIVE_AI_API_KEY :
+        required_vars.append("GOOGLE_GENERATIVE_AI_API_KEY ")
 
-    if not settings.PINECONE_API_KEY:
-        required_vars.append("PINECONE_API_KEY")
+    if not settings.PINECONE_DB_API_KEY:
+        required_vars.append("PINECONE_DB_API_KEY")
 
     if not settings.PINECONE_ENVIRONMENT:
         required_vars.append("PINECONE_ENVIRONMENT")
@@ -67,4 +67,4 @@ try:
 except ValueError as e:
     print(f"Configuration warning {e}")
     print("Please set the requierd environment variables in your .env file")
-    print("Required variables: GROQ_API_KEY, PINECONE_API_KEY, PINECONE_ENVIRONMENT")
+    print("Required variables: GROQ_API_KEY, PINECONE_DB_API_KEY, PINECONE_ENVIRONMENT")

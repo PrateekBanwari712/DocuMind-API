@@ -25,12 +25,14 @@ class VectorDBInterface(ABC):
     """Abstract interface for vector database operations"""
 
     @abstractmethod
-    async def store_embeddings(self, embeddings: List[Dict[str, Any]]) -> bool:
+    async def store_embeddings(
+        self, embeddings: List[Dict[str, Any]], namespace: str = ""
+    ) -> bool:
         pass
 
     @abstractmethod
     async def search_similar(
-        self, query_embedding: List[float], top_k: int = 5
+        self, query_text: str, top_k: int = 5
     ) -> List[Dict[str, Any]]:
         pass
 
@@ -56,15 +58,15 @@ class PineconeVectorDB(VectorDBInterface):
                 "Pinecone is required. Insall with: pip install pinecone-client"
             )
 
-        if not settings.PINECONE_API_KEY:
-            raise ValueError("PINECONE_API_KEY is required for Pinecone")
+        if not settings.PINECONE_DB_API_KEY:
+            raise ValueError("PINECONE_DB_API_KEY is required for Pinecone")
 
         if not settings.PINECONE_ENVIRONMENT:
             raise ValueError("PINECONE_ENVIRONMENT is required for Pinecone")
 
         try:
             # Initialize Pinecone client with new SDK
-            self.pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+            self.pc = Pinecone(api_key=settings.PINECONE_DB_API_KEY)
             self.index_name = settings.PINECONE_INDEX_NAME
             self.embedding_dimension = 768  # Gemini embedding dimension
             self._initialize_index()
@@ -105,6 +107,9 @@ class PineconeVectorDB(VectorDBInterface):
                 logger.info(f"Pinecone index '{self.index_name}' already exists")
 
             # Connect to the index
+            self.index = self.pc.Index(self.index_name)
+
+            # Verify index configuration
             index_stats = self.index.describe_index_stats()
             logger.info(
                 f"Pinecone index '{self.index_name}' initialized. Total vectors: {index_stats.total_vector_count}"
@@ -114,127 +119,167 @@ class PineconeVectorDB(VectorDBInterface):
             logger.error(f"Failed to initialize Pinecone index: {str(e)}")
             raise
 
-    async def store_embeddings(self, embeddings: List[Dict[str, Any]]) -> bool:
+    async def store_embeddings(
+        self, embeddings: List[Dict[str, Any]], namespace: str = ""
+    ) -> bool:
         """Store embeddings in Pinecone with proper metadata handling"""
         if not embeddings:
             logger.warning("No embeddings provided to store")
             return True
 
         try:
-            vectors = []
+            documents = []
             for emb in embeddings:
                 # Validate embedding structure
-                if not all(
-                    key in emb for key in ["id", "embedding", "text", "metadata"]
-                ):
+                if not all(key in emb for key in ["id", "text", "metadata"]):
                     logger.error(f"Invalid embedding structure: {list(emb.keys())}")
+                    continue
 
-                # Prepare metadata with size limitations
-                metadata = dict(emb["metadata"]) if emb["metadata"] else {}
+                metadata = dict(emb["metadata"] or {})
+                text_content = str(emb["text"])[:4000]
+                metadata["chunk_text"] = text_content
 
-                # Store text content in metadata (truncate if too long)
-                text_content = emb["text"][:40000]  # Pinecone metadata size limit
-                metadata["text"] = text_content
+                clean_metadata = {}
 
                 # Ensure all metadata values are JSON serializable
                 for key, value in metadata.items():
-                    if isinstance(value, datetime):
-                        metadata[key] = value.isoformat()
-                    elif not isinstance(value, (str, int, float, bool, type(None))):
-                        metadata[key] = str(value)
+                    if value is None:
+                        continue
+                    elif isinstance(value, datetime):
+                        clean_metadata[key] = value.isoformat()
+                    elif isinstance(value, (str, int, float, bool)):
+                        clean_metadata[key] = value
+                    elif isinstance(value, list) and all(
+                        isinstance(item, str) for item in value
+                    ):
+                        clean_metadata[key] = value
+                    else:
+                        clean_metadata[key] = str(value)
 
-                    vectors.append(
-                        {
-                            "id": str(emb["id"]),
-                            "values": emb["embedding"],
-                            "metadata": metadata,
-                        }
-                    )
-                if not vectors:
-                    logger.error("No valid vectors to store")
-                    return False
-                # Batch upsert with error handling
-                batch_size = 100
-                total_stored = 0
-
-                for i in range(0, len(vectors), batch_size):
-                    batch = vectors[i : i + batch_size]
-                try:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        None, lambda b=batch: self.index.upsert(vectors=b)
-                    )
-                    total_stored += len(batch)
-                    logger.debug(
-                        f"Stored batch {i//batch_size + 1}: {len(batch)} vectors"
-                    )
-                except Exception as batch_error:
-                    logger.error(
-                        f"Error storing batch {i//batch_size + 1}: {str(batch_error)}"
-                    )
-                    # Continue with next batch instead of failing completely
-                    continue
-                logger.info(
-                    f"Successfully stored {total_stored}/{len(embeddings)} embeddings in Pinecone"
+                documents.append(
+                    {
+                        "_id": str(emb["id"]),
+                        **clean_metadata,
+                    }
                 )
-                return total_stored > 0
+
+            if not documents:
+                logger.error("No valid documents to store")
+                return False
+
+            # Batch upsert with error handling
+            batch_size = 100
+            total_stored = 0
+
+            for i in range(0, len(documents), batch_size):
+                batch = documents[i : i + batch_size]
+
+                try:
+                    response = await asyncio.to_thread(
+                        self.index.documents.upsert,
+                        documents=batch,
+                        namespace=namespace,
+                    )
+
+                    total_stored += response.upserted_count
+                    logger.info(
+                        "Stored batch %s: %s documents",
+                        i // batch_size + 1,
+                        response.upserted_count,
+                    )
+
+                except Exception:
+                    logger.exception(
+                        "Error storing batch %s",
+                        i // batch_size + 1,
+                    )
+            logger.info(
+                f"Successfully stored {total_stored}/{len(documents)} embeddings in Pinecone"
+            )
+            return total_stored > 0
+
         except Exception as e:
-            logger.error(f"Error storing embeddings in Pinecone :{str(e)}")
+            logger.error(f"Error storing embeddings in Pinecone: {str(e)}")
             return False
 
     async def search_similar(
-        self, query_embedding: List[float], top_k: int = 5
+        self, query_text: str, top_k: int = 5
     ) -> List[Dict[str, Any]]:
         """Search for similar embeddings in Pinecone with comprehensive error handling"""
-        if not query_embedding:
-            logger.error("No query embedding provided")
+        if not query_text or not query_text.strip():
+            logger.error("No query text provided")
             return []
 
-        if len(query_embedding) != self.embedding_dimension:
-            logger.error(
-                f"Query embedding dimension {len(query_embedding)} doesn't match index dimension {self.embedding_dimension}"
-            )
+        if top_k < 1:
+            logger.error("top_k must be at least 1")
             return []
 
         try:
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                lambda: self.index_query(
-                    vector=query_embedding,
-                    top_k=min(top_k, 1000),  # Pinecone limit
-                    include_metadata=True,
-                    include_values=False,  # Excluding embedding values in response
-                ),
-            )
+            stats = await asyncio.to_thread(self.index.describe_index_stats)
+            namespaces = getattr(stats, "namespaces", None) or {}
+            namespace_names = list(namespaces) or [""]
+            limit = min(top_k, 1000)
+            query_tasks = [
+                asyncio.to_thread(
+                    self.index.documents.search,
+                    score_by=[
+                        {
+                            "type": "embed",
+                            "field": "chunk_text",
+                            "query": query_text,
+                        }
+                    ],
+                    top_k=limit,
+                    namespace=namespace,
+                    include_fields=["*"],
+                )
+                for namespace in namespace_names
+            ]
+            results = await asyncio.gather(*query_tasks, return_exceptions=True)
+            successful_results = [
+                result for result in results if not isinstance(result, Exception)
+            ]
+            if not successful_results:
+                raise RuntimeError("Pinecone search failed for every namespace") from next(
+                    result for result in results if isinstance(result, Exception)
+                )
 
             formatted_results = []
-            if "matches" in results:
-                for match in results["matches"]:
-                    # Extract text from metadata
-                    metadata = match.get("metadata", {})
-                    text = metadata.get("text", "")
+            for namespace, result in zip(namespace_names, results):
+                if isinstance(result, Exception):
+                    logger.error(
+                        "Error searching Pinecone namespace %s: %s", namespace, result
+                    )
+                    continue
 
-                    # Create a clean metadata dic without the text field
-                    clean_metadata = {k: v for k, v in metadata.items() if k != "text"}
-
+                for document in getattr(result, "matches", []) or []:
+                    fields = document.to_dict()
+                    metadata = {
+                        key: value
+                        for key, value in fields.items()
+                        if key not in {"_id", "_score", "chunk_text"}
+                    }
                     formatted_results.append(
                         {
-                            "id": match["id"],
-                            "text": text,
-                            "metadata": clean_metadata,
-                            "score": match.get("score", 0.0),
+                            "_id": document.id,
+                            "text": document.get("chunk_text", ""),
+                            "metadata": metadata,
+                            "score": document.score or 0.0,
                         }
                     )
 
+            formatted_results.sort(
+                key=lambda result: result["score"], reverse=True
+            )
+            formatted_results = formatted_results[:top_k]
             logger.info(
                 f"Found {len(formatted_results)} similar documents with scores: {[r['score'] for r in formatted_results[:3]] }"
             )
             return formatted_results
 
         except Exception as e:
-            logger.error(f"Error searching in Pinecone: {str(e)}")
-            return []
+            logger.exception("Error searching in Pinecone: %s", e)
+            raise
 
     async def delete_by_file_id(self, file_id: str) -> bool:
         """Delete all embeddings for a specific file using metadata filtering"""
@@ -345,7 +390,7 @@ class PineconeVectorDB(VectorDBInterface):
             logger.error(f"Error listing files from Pinecone: {str(e)}")
             return []
 
-    async def get_file_info(self, file_id: str) -> Optional[Dict[str:Any]]:
+    async def get_file_info(self, file_id: str) -> Optional[Dict[str, Any]]:
         """Get information about a specific file using query sampling"""
         if not file_id:
             logger.error("No file_id provided")
@@ -415,15 +460,17 @@ class VectorDBService:
             logger.error(f"Failed to initialize VectorDBService: {str(e)}")
             raise
 
-    async def store_embeddings(self, embeddings: List[Dict[str, Any]]) -> bool:
+    async def store_embeddings(
+        self, embeddings: List[Dict[str, Any]], namespace: str = ""
+    ) -> bool:
         """Store embeddings in Pinecone"""
-        return await self.db.store_embeddings(embeddings)
+        return await self.db.store_embeddings(embeddings, namespace)
 
     async def search_similar(
-        self, query_embedding: List[float], top_k: int = 5
+        self, query_text: str, top_k: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Search for similar embeddings in Pinecone"""
-        return await self.db.search_similar(query_embedding, top_k)
+        """Search for similar documents in Pinecone"""
+        return await self.db.search_similar(query_text, top_k)
 
     async def delete_file(self, file_id: str) -> bool:
         """Delete all embeddings for a specific file from Pinecone"""
