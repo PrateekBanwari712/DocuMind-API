@@ -55,7 +55,6 @@ class DocumentRetrieverTool(BaseTool if BaseTool else object):
             if self.vectorbd_service is None:
                 self.vectorbd_service = VectorDBService()
 
-            # Pinecone generates query embeddings from the indexed text field.
             similar_docs = await self.vectorbd_service.search_similar(
                 query_text=query, top_k=top_k
             )

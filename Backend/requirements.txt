@@ -1,0 +1,47 @@
+# Web framework
+fastapi
+uvicorn[standard]
+
+# Pydantic for data validation
+pydantic
+pydantic-settings
+
+# PDF processing
+PyPDF2
+
+# HuggingFace for embeddings
+huggingface-hub
+sentence-transformers
+
+# Gemini for LLM
+google-genai
+
+# Vector database - Pinecone
+pinecone
+
+# LangChain with HuggingFace integration
+langchain
+langchain-community
+langchain-huggingface
+
+# LangGraph for agent orchestration
+langgraph
+
+# Text processing
+numpy
+
+# HTTP client
+httpx
+
+# File handling
+python-multipart
+
+# Environment management
+python-dotenv
+
+# Development and testing
+pytest
+pytest-asyncio
+
+# Logging and monitoring
+structlog

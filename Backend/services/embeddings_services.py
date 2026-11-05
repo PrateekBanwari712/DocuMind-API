@@ -3,7 +3,8 @@ Embeddings service using HuggingFace models
 """
 
 import asyncio
-from typing import List, Optional
+from functools import lru_cache
+from typing import List
 import numpy as np
 
 try:
@@ -31,12 +32,12 @@ class EmbeddingsService:
         try:
             # Initialize HuggingFace embeddings with the specified model
             self.embeddings = HuggingFaceEmbeddings(
-                model_name=settings.EMBEDDING_MODEL,
+                model_name=settings.HUGGINGFACE_EMBEDDING_MODEL,
                 model_kwargs={"device": "cpu"},  # can use 'cuda if GPU is available
                 encode_kwargs={"normalize_embeddings": True},
             )
             logger.info(
-                f"HuggingFace embeddings initialized with model: {settings.EMBEDDING_MODEL}"
+                f"HuggingFace embeddings initialized with model: {settings.HUGGINGFACE_EMBEDDING_MODEL}"
             )
         except Exception as e:
             logger.error(f"Failed to initialize embeddings: {str(e)}")
@@ -44,14 +45,10 @@ class EmbeddingsService:
 
     async def generate_embedding(self, text: str) -> List[float]:
         """
-        Generate embeddings for a single text using Google's Gemini embedding model.
+        Generate an embedding for one text using the configured Hugging Face model.
         """
         try:
-            # Run the synchronous embedding in a thread pool
-            loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(
-                None, lambda: self.embeddings.embed_query(text)
-            )
+            embedding = await asyncio.to_thread(self.embeddings.embed_query, text)
 
             logger.debug(f"Generated embedding with dimension: {len(embedding)}")
             return embedding
@@ -65,10 +62,8 @@ class EmbeddingsService:
         Generate embeddings for multiple texts
         """
         try:
-            # Run the synchronous batch embedding in a thread pool
-            loop = asyncio.get_event_loop()
-            embeddings = await loop.run_in_executor(
-                None, lambda: self.embeddings.embed_documents(texts)
+            embeddings = await asyncio.to_thread(
+                self.embeddings.embed_documents, texts
             )
 
             logger.info(f"Generated {len(embeddings)} embeddings")
@@ -82,10 +77,7 @@ class EmbeddingsService:
         Generate embedding for a query
         """
         try:
-            loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(
-                None, lambda: self.embeddings.embed_query(query)
-            )
+            embedding = await asyncio.to_thread(self.embeddings.embed_query, query)
 
             logger.debug(f"Generated query embedding with dimension: {len(embedding)}")
             return embedding
@@ -144,3 +136,9 @@ class EmbeddingsService:
         except Exception as e:
             logger.error(f"Error finding similar embeddings: {str(e)}")
             return []
+
+
+@lru_cache(maxsize=1)
+def get_embeddings_service() -> EmbeddingsService:
+    """Return the process-wide model instance so model weights are loaded once."""
+    return EmbeddingsService()

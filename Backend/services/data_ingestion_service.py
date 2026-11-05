@@ -4,7 +4,6 @@ Data ingestion service for PDF text extraction and chunking
 
 import uuid
 import io
-from io import BytesIO
 from core.config import settings
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -27,6 +26,7 @@ except ImportError:
     LANGCHAIN_AVAILABLE = False 
 
 from utils.logger import get_logger
+from services.embeddings_services import get_embeddings_service
 from services.vectordb_service import VectorDBService
 
 logger = get_logger(__name__)
@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 class DataIngestionService:
     def __init__(self):
         self.text_splitter = self._initialize_text_splitter()
+        self.embeddings_service = get_embeddings_service()
         self.vectordb_service = VectorDBService()
 
     def _initialize_text_splitter(self):
@@ -81,7 +82,7 @@ class DataIngestionService:
 
     async def extract_text_from_pdf(self, file_content: bytes) -> str:
         """Extract text from PDF file content"""
-        if  pypdf  is None:
+        if not PYPDF_AVAILABLE:
             raise ImportError(
                 "pypdf or PyPDF2 is required for PDF processing. Install with pip install PyPDF2"
             )
@@ -123,7 +124,7 @@ class DataIngestionService:
 
     async def process_file(
         self,
-        file_content: str,
+        file_content: bytes,
         filename: str,
         metadata: Optional[Dict[str, Any]] = None,
         file_id: Optional[str] = None,
@@ -151,12 +152,17 @@ class DataIngestionService:
             if not chunks:
                 raise ValueError("No valid chunks created from the text")
 
+            # Generate embeddings for each chunk
+            logger.info(f"Generating embeddings for {len(chunks)} chunks")
             chunk_documents = []
+
             for i, chunk in enumerate(chunks):
+                embedding = await self.embeddings_service.generate_embedding(chunk)
                 chunk_documents.append(
                     {
                         "id": f"{file_id}_chunk_{i}",
                         "text": chunk,
+                        "values": embedding,
                         "metadata": {
                             "file_id": file_id,
                             "filename": filename,
@@ -167,7 +173,14 @@ class DataIngestionService:
                     }
                 )
 
-            await self.vectordb_service.store_embeddings(chunk_documents, namespace=file_id)
+            if not chunk_documents:
+                raise ValueError("Failed to generate any embeddings")    
+
+            stored = await self.vectordb_service.store_embeddings(
+                chunk_documents, namespace=file_id
+            )
+            if not stored:
+                raise RuntimeError("Failed to store generated document embeddings")
 
             logger.info(
                 f"Successfully processed file {filename}: {len(chunk_documents)} chunks stored"

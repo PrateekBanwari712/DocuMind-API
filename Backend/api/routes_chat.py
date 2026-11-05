@@ -24,7 +24,7 @@ class ChatResponse(BaseModel):
     confidence_score: Optional[float] = None
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat/query", response_model=ChatResponse)
 async def chat(message: ChatMessage):
     """
     Main chat endpoint for RAG queries
