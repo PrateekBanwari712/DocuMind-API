@@ -21,8 +21,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-app.mount("/static",StaticFiles(directory="static"), name="static")
-
 app.include_router(chat_router, prefix="/api/v1", tags={"chat"})
 app.include_router(files_router, prefix="/api/v1", tags={"files"})
 

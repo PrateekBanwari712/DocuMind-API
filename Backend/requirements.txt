@@ -6,8 +6,8 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 
-# PDF processing
-PyPDF2
+# PDF processing and structured text extraction
+docling
 
 # HuggingFace for embeddings
 huggingface-hub

@@ -9,21 +9,25 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 try:
-    import PyPDF2 as pypdf
-    PYPDF_AVAILABLE = True
-except ImportError:
-    try:
-        import pypdf
-        PYPDF_AVAILABLE = True
-    except ImportError:
-        PYPDF_AVAILABLE = False    
+    from docling.datamodel.base_models import DocumentStream, InputFormat
+    from docling.datamodel.pipeline_options import (
+        HeadingHierarchyOptions,
+        PdfPipelineOptions,
+    )
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    DOCLING_AVAILABLE = True
+except Exception as e:
+    DOCLING_AVAILABLE = False
+
 
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
+
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     RecursiveCharacterTextSplitter = None
-    LANGCHAIN_AVAILABLE = False 
+    LANGCHAIN_AVAILABLE = False
 
 from utils.logger import get_logger
 from services.embeddings_services import get_embeddings_service
@@ -80,27 +84,32 @@ class DataIngestionService:
 
         return chunks
 
-    async def extract_text_from_pdf(self, file_content: bytes) -> str:
-        """Extract text from PDF file content"""
-        if not PYPDF_AVAILABLE:
+    async def extract_text_from_pdf(
+        self, file_content: bytes, filename: str = "uploaded.pdf"
+    ) -> str:
+        """Extract structured text from PDF bytes with Docling."""
+        if not DOCLING_AVAILABLE:
             raise ImportError(
-                "pypdf or PyPDF2 is required for PDF processing. Install with pip install PyPDF2"
+                "Docling is required for PDF processing. Install with pip install docling"
             )
 
         try:
-           # Handle both pypdf and PyPDF2 reader APIs safely
-            reader_cls = getattr(pypdf, "PdfReader", None) or getattr(pypdf, "PdfFileReader", None)
-            pdf_reader = reader_cls(io.BytesIO(file_content))
-            text = ""
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.heading_hierarchy_options = HeadingHierarchyOptions(
+                enabled=True
+            )
 
-            for page in pdf_reader.pages:
-                page_text = page.extract_text()
-                text += page_text + "\n"
-
-            return text.strip()
+            converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                }
+            )
+            source = DocumentStream(name=filename, stream=io.BytesIO(file_content))
+            result = converter.convert(source=source)
+            return result.document.export_to_markdown().strip()
 
         except Exception as e:
-            logger.error((f"Error extracting text from PDF: {str(e)}"))
+            logger.error(f"Error extracting text from PDF: {str(e)}")
             raise ValueError(f"Failed to extract text from PDF: {str(e)}")
 
     async def chunk_text(self, text: str) -> List[str]:
@@ -113,11 +122,11 @@ class DataIngestionService:
                 chunks = self._simple_text_splitter(text)
 
             # Filter out very small chunks
-            filtered_chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50] 
+            filtered_chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50]
 
             logger.info(f"Created {len(filtered_chunks)} chunks from text")
             return filtered_chunks
-        
+
         except Exception as e:
             logger.error(f"Error chunking text: {str(e)}")
             raise ValueError(f"Failed to chunk text: {str(e)}")
@@ -141,7 +150,7 @@ class DataIngestionService:
             logger.info(f"Processing file: {filename} (ID:{file_id})")
 
             # Extract text from PDF
-            text = await self.extract_text_from_pdf(file_content)
+            text = await self.extract_text_from_pdf(file_content, filename)
 
             if not text.strip():
                 raise ValueError("No text could be extracted from the PDF")
@@ -168,13 +177,17 @@ class DataIngestionService:
                             "filename": filename,
                             "chunk_index": i,
                             "upload_date": datetime.now().isoformat(),
-                            "custom_metadata": metadata if isinstance(metadata, (str, int, float, bool)) else str(metadata) if metadata else "",
+                            "custom_metadata": (
+                                metadata
+                                if isinstance(metadata, (str, int, float, bool))
+                                else str(metadata) if metadata else ""
+                            ),
                         },
                     }
                 )
 
             if not chunk_documents:
-                raise ValueError("Failed to generate any embeddings")    
+                raise ValueError("Failed to generate any embeddings")
 
             stored = await self.vectordb_service.store_embeddings(
                 chunk_documents, namespace=file_id
